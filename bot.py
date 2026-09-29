@@ -1,5 +1,5 @@
 # ══════════════════════════════════════════════════════════════
-#   SMS BOT v15.2 — FINAL PREMIUM 💎
+#   SMS BOT v15.3 — FINAL NIJWM 💎
 #   By NIJWM
 # ══════════════════════════════════════════════════════════════
 
@@ -28,7 +28,7 @@ OWNER_ID  = 7165783614
 DEFAULT_ADMINS = [7165783614]
 
 _DATA_FILE = "bot_data.json"
-_VERSION   = "v15.2"
+_VERSION   = "v15.3"
 _CREDITS   = "NIJWM"
 _OWNER_UN  = "@nijwmz"
 
@@ -221,12 +221,9 @@ def role_badge(uid, d) -> str:
         return "💎"
     return "✨"
 
-# Public callbacks allowed even without premium access
 def is_public_callback(c) -> bool:
-    if c in ("home", "fj:check", "help:show", "about:show"): return True
-    if c.startswith("prem:"): return True
-    if c.startswith("fj:"):   return True
-    return False
+    """Only these run even without access. Admin sub-callbacks MUST fall through."""
+    return c in ("home", "fj:check", "help:show", "about:show")
 
 # ══════════════════════════════════════════════
 #  FORCE JOIN
@@ -287,6 +284,7 @@ def is_payment_set(pay) -> bool:
     return bool(pay.get("upi") or pay.get("qr") or pay.get("binance") or pay.get("crypto"))
 
 def kb(*rows):
+    """Bulletproof keyboard builder — accepts tuples OR InlineKeyboardButton."""
     ikb = []
     for row in rows:
         out_row = []
@@ -314,21 +312,21 @@ HELP_TEXT = f"""
 <b>📖  HELP CENTER</b>
 {line()}
 
-<b>🚀  How to Send</b>
+<b>🚀  Shuru kaise karein</b>
 
-<b>1.</b>  Tap <b>🧪 Test SMS</b>
-<b>2.</b>  Enter target number
-<b>3.</b>  Enter your message
-<b>4.</b>  Watch live progress
-<b>5.</b>  Tap 🛑 anytime to stop
+<b>1.</b>  <b>🧪 Test SMS</b> pe tap karo
+<b>2.</b>  Target number daalo
+<b>3.</b>  Message likho
+<b>4.</b>  Live progress dekho
+<b>5.</b>  🛑 Stop — jab mann bhar jaye 😄
 
 {line()}
 
 <b>💎  Premium Access</b>
 
-Choose a plan → Complete payment →
-Send screenshot → Admin verifies →
-Premium activated.
+Plan chuno → Payment karo →
+Screenshot bhejo → Admin verify karega →
+Premium unlock 🎉
 
 {line()}
 
@@ -338,7 +336,7 @@ Premium activated.
 <code>+919876543210</code>
 <code>9876543210</code>
 
-{line()}
+<{line()}>
 
 <b>👨‍💻  Credits</b>
 
@@ -354,21 +352,21 @@ ABOUT_TEXT = f"""
 <b>Version</b>   : <code>{_VERSION}</code>
 
 {line()}
-<i>Premium SMS Infrastructure</i>
+<i>Premium SMS Infrastructure — built with ☕</i>
 """
 
 def premium_landing_text(d):
     return (
         f"<b>💎  PREMIUM ACCESS</b>\n"
         f"{line()}\n\n"
-        f"Unlock the full power of SMS Bot.\n\n"
-        f"<b>What you get</b>\n"
+        f"Bot free hai but premium ka alag hi maza hai 😎\n\n"
+        f"<b>Kya milta hai</b>\n"
         f"  ⚡  Unlimited SMS sending\n"
         f"  🚀  Fastest delivery speed\n"
         f"  📊  Live tracking & reports\n"
         f"  🛑  Real-time stop control\n"
-        f"  💎  Lifetime Pro access\n\n"
-        f"<i>Starting from just ₹20</i>"
+        f"  💎  Lifetime Pro badge\n\n"
+        f"<i>Starting from just ₹20 — chai se sasta ☕</i>"
     )
 
 # ══════════════════════════════════════════════
@@ -455,9 +453,9 @@ def prem_plans_edit_kb(d):
 def prem_pay_edit_kb(d):
     pay = d.get("premium", {}).get("payment", {})
     def stat(v): return "✅" if v else "❌"
-    upi_short = pay.get("upi", "")[:14] or "not set"
-    binance_short = pay.get("binance", "")[:14] or "not set"
-    crypto_short = pay.get("crypto", "")[:14] or "not set"
+    upi_short = (pay.get("upi", "") or "not set")[:14]
+    binance_short = (pay.get("binance", "") or "not set")[:14]
+    crypto_short = (pay.get("crypto", "") or "not set")[:14]
     qr_stat = "Set" if pay.get("qr") else "not set"
     rows = [
         [(f"🏦  UPI     {stat(pay.get('upi'))}  {upi_short}", "prem:setupi")],
@@ -781,25 +779,33 @@ async def _cleanup_job(uid):
     if job and job.state != "running": _active_jobs.pop(uid, None)
 
 # ══════════════════════════════════════════════
-#  STARTUP BROADCAST
+#  STARTUP BROADCAST  (with /start button)
 # ══════════════════════════════════════════════
-async def notify_all_users_online(bot):
+async def notify_all_users_online(bot, bot_username):
     try:
         await asyncio.sleep(2)
         d = load()
         uids = list(d.get("users", {}).keys())
         if not uids: return
+
+        start_url = f"https://t.me/{bot_username}?start=1"
+        launch_kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🚀  Let's Start", url=start_url)
+        ]])
+
         text = (
             f"<b>🚀  BOT IS ONLINE</b>\n"
             f"{line()}\n\n"
             f"🟢  Status    : <b>Online</b>\n"
             f"⚡  Version   : <code>{_VERSION}</code>\n"
-            f"👨‍💻  By        : <b>{_CREDITS}</b>"
+            f"👨‍💻  By        : <b>{_CREDITS}</b>\n\n"
+            f"<i>Tap below to begin ⤵️</i>"
         )
         ok = fail = 0
         for k in uids:
             try:
-                await bot.send_message(int(k), text, parse_mode="HTML")
+                await bot.send_message(int(k), text,
+                    parse_mode="HTML", reply_markup=launch_kb)
                 ok += 1
             except Exception:
                 fail += 1
@@ -924,10 +930,10 @@ async def c_stop(msg: Message):
         uid = msg.from_user.id
         job = _active_jobs.get(uid)
         if not job or job.state != "running":
-            await msg.answer("No active job."); return
+            await msg.answer("Arey, koi kaam chal hi nahi raha 😅"); return
         job.cancel_event.set()
         if job.updater and not job.updater.done(): job.updater.cancel()
-        await msg.answer("🛑  Stopped.")
+        await msg.answer("🛑  Ruk gaya!")
     except Exception as e: log.error(f"/stop: {e}")
 
 @R.message(Command("cancel"))
@@ -1076,7 +1082,7 @@ async def f_test_to(msg, state):
         to = normalize_phone(msg.text.strip())
         if not to:
             await msg.answer(
-                f"❌ Invalid number.\n\n<code>+919876543210</code>\n<code>+91 98765 43210</code>\n<code>9876543210</code>",
+                f"❌ Number samajh nahi aaya 😅\n\n<code>+919876543210</code>\n<code>+91 98765 43210</code>\n<code>9876543210</code>",
                 parse_mode="HTML"); return
         await state.update_data(test_to=to)
         await state.set_state(W.test_msg)
@@ -1382,7 +1388,7 @@ async def cb_stop(cq):
         log.error(f"cb_stop: {e}"); await cq.answer("❌")
 
 # ══════════════════════════════════════════════
-#  PREMIUM CALLBACKS
+#  PREMIUM CALLBACKS — user-facing
 # ══════════════════════════════════════════════
 @R.callback_query(F.data == "prem:menu")
 async def cb_prem_menu(cq, state):
@@ -1400,7 +1406,7 @@ async def cb_prem_menu(cq, state):
                 kb([("🛡  Open Panel","adm:prem"), ("🏠  Home","home")])); return
         if not premium_mode_on(d):
             await sedit(cq,
-                f"<b>💎 Premium</b>\n{line()}\n\nBot is currently <b>FREE</b> 🎉",
+                f"<b>💎 Premium</b>\n{line()}\n\nBot is currently <b>FREE</b> 🎉\n\nEnjoy!",
                 kb([("🏠  Home","home")])); return
         if is_premium_user(uid, d):
             pu = d["premium"]["users"].get(str(uid), {})
@@ -1780,7 +1786,7 @@ async def cb_prem_view(cq, state):
     except Exception as e: log.error(f"prem:view: {e}")
 
 # ══════════════════════════════════════════════
-#  GENERAL CALLBACKS
+#  GENERAL CALLBACKS  (catch-all — MUST be last)
 # ══════════════════════════════════════════════
 @R.callback_query()
 async def cb(cq, state):
@@ -1789,6 +1795,7 @@ async def cb(cq, state):
         if is_banned(uid, d):
             await cq.answer("🚫 Banned", show_alert=True); return
 
+        # ── Public: home / force join check / help / about
         if c in ("home","fj:check"):
             await state.clear()
             ok, not_joined = await check_force_join(cq.bot, uid, d)
@@ -1808,16 +1815,12 @@ async def cb(cq, state):
             if c == "fj:check": await cq.answer("✅ Verified", show_alert=True)
             return
 
-        # Public callbacks — work even without premium access
-        if is_public_callback(c):
-            if c == "help:show":
-                await sedit(cq, HELP_TEXT, kb([("◀️  Back","home")])); await cq.answer(); return
-            if c == "about:show":
-                await sedit(cq, ABOUT_TEXT, kb([("◀️  Back","home")])); await cq.answer(); return
-            # prem:* handled by dedicated handlers above
-            await cq.answer(); return
+        if c == "help:show":
+            await sedit(cq, HELP_TEXT, kb([("◀️  Back","home")])); return
+        if c == "about:show":
+            await sedit(cq, ABOUT_TEXT, kb([("◀️  Back","home")])); return
 
-        # Everything else requires access
+        # ── Access gate for everything else
         if not can_use(uid, d):
             if premium_mode_on(d):
                 await sedit(cq, premium_landing_text(d), premium_cta_kb())
@@ -1830,7 +1833,7 @@ async def cb(cq, state):
         if c == "test:go":
             existing = _active_jobs.get(uid)
             if existing and existing.state == "running":
-                await cq.answer("⚠️ A job is already running.", show_alert=True); return
+                await cq.answer("⚠️ Job already running.", show_alert=True); return
             if not d.get("firebase_pool"):
                 await cq.answer("❌ Service unavailable.", show_alert=True); return
             await state.set_state(W.test_to)
@@ -1929,40 +1932,49 @@ async def cb(cq, state):
             if not is_admin(uid, d): await cq.answer("🚫", show_alert=True); return
             await sedit(cq,
                 f"<b>💳 Payment Methods</b>\n{line()}\n\n"
-                f"Empty methods stay hidden from users.",
+                f"Empty methods stay hidden from users.\n"
+                f"Tap any to set / change / clear.",
                 prem_pay_edit_kb(d))
 
         elif c == "prem:setupi":
             if not is_admin(uid, d): await cq.answer("🚫", show_alert=True); return
+            await state.clear()
             await state.set_state(W.prem_upi)
             await sedit(cq,
                 f"<b>🏦 Set UPI ID</b>\n{line()}\n\n"
-                f"Example: <code>example@ybl</code>\n"
-                f"Clear: <code>/clear</code>",
+                f"Example: <code>example@ybl</code>\n\n"
+                f"Clear: <code>/clear</code>\n"
+                f"Cancel: button below",
                 kb([("❌  Cancel","prem:editpay")]))
 
         elif c == "prem:setqr":
             if not is_admin(uid, d): await cq.answer("🚫", show_alert=True); return
+            await state.clear()
             await state.set_state(W.prem_qr)
             await sedit(cq,
                 f"<b>📱 Set QR Code</b>\n{line()}\n\n"
-                f"Send QR code photo.\nClear: <code>/clear</code>",
+                f"Send QR code photo.\n\n"
+                f"Clear: <code>/clear</code>",
                 kb([("❌  Cancel","prem:editpay")]))
 
         elif c == "prem:setbinance":
             if not is_admin(uid, d): await cq.answer("🚫", show_alert=True); return
+            await state.clear()
             await state.set_state(W.prem_binance)
             await sedit(cq,
                 f"<b>🟡 Set Binance ID</b>\n{line()}\n\n"
-                f"Send Binance Pay ID / UID.\nClear: <code>/clear</code>",
+                f"Send Binance Pay ID / UID.\n\n"
+                f"Clear: <code>/clear</code>",
                 kb([("❌  Cancel","prem:editpay")]))
 
         elif c == "prem:setcrypto":
             if not is_admin(uid, d): await cq.answer("🚫", show_alert=True); return
+            await state.clear()
             await state.set_state(W.prem_crypto)
             await sedit(cq,
                 f"<b>🪙 Set Crypto Wallet</b>\n{line()}\n\n"
-                f"Send wallet address.\nClear: <code>/clear</code>",
+                f"Send wallet address.\n\n"
+                f"Clear: <code>/clear</code>",
                 kb([("❌  Cancel","prem:editpay")]))
 
         elif c == "prem:reqs":
@@ -2038,7 +2050,7 @@ async def cb(cq, state):
                 kb([("➕  Add Single","wiz:start"), ("◀️  Admin","adm:menu")]))
 
         elif c == "wiz:start":
-            if not is_admin(uid, d): await cq.answer("🚫 Admin only", show_alert=True); return
+            if not is_admin(uid, d): await cq.answer("🚫", show_alert=True); return
             await state.clear()
             await state.set_state(W.fb_url)
             await sedit(cq,
@@ -2049,7 +2061,7 @@ async def cb(cq, state):
                 kb([("❌  Cancel","fbm:menu")]))
 
         elif c == "fbb:start":
-            if not is_admin(uid, d): await cq.answer("🚫 Admin only", show_alert=True); return
+            if not is_admin(uid, d): await cq.answer("🚫", show_alert=True); return
             await state.clear()
             await state.set_state(W.fb_bulk)
             await sedit(cq,
@@ -2143,19 +2155,19 @@ async def cb(cq, state):
                 kb([("❌  Cancel","adm:menu")]))
 
         elif c == "adm:free":
-            if not is_owner(uid): await cq.answer("🚫 Owner only", show_alert=True); return
+            if not is_owner(uid): await cq.answer("🚫", show_alert=True); return
             d["free"] = not d.get("free", False); save(d)
             await cq.answer(f"Free: {'✅' if d['free'] else '🔴'}")
             await sedit(cq, "<b>🛡 Panel</b>", adm_menu_kb(uid, d))
 
         elif c == "adm:addadmin":
-            if not is_owner(uid): await cq.answer("🚫 Owner only", show_alert=True); return
+            if not is_owner(uid): await cq.answer("🚫", show_alert=True); return
             await state.set_state(W.adm_add)
             await sedit(cq, f"<b>➕ Add Admin</b>\n{line()}\n\nSend user ID:",
                 kb([("❌  Cancel","adm:menu")]))
 
         elif c == "adm:zip":
-            if not is_owner(uid): await cq.answer("🚫 Owner only", show_alert=True); return
+            if not is_owner(uid): await cq.answer("🚫", show_alert=True); return
             await cq.answer("📦…")
             zdata = make_zip()
             fname = f"smsbot_{datetime.now().strftime('%Y%m%d_%H%M')}.zip"
@@ -2250,7 +2262,7 @@ async def main():
             parse_mode="HTML")
     except Exception as e: log.warning(f"owner notify: {e}")
 
-    asyncio.create_task(notify_all_users_online(bot))
+    asyncio.create_task(notify_all_users_online(bot, me.username))
 
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
